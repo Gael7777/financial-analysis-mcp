@@ -1,0 +1,1 @@
+Setting up my MCP Server for financial data gathering here.
