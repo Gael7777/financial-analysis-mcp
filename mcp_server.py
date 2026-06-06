@@ -6,9 +6,9 @@ from datetime import datetime
 
 app = FastMCP("financial-analysis-mcp")
 
-# Get your secret token from environment variables
-SECRET_TOKEN = os.getenv("SECRET_TOKEN", "your-secret-token-change-me")
-INFOMANIAK_ENDPOINT = os.getenv("INFOMANIAK_ENDPOINT", "https://your-domain.com/api/receive-analysis.php")
+# Get configuration from environment variables
+SECRET_TOKEN = os.getenv("SECRET_TOKEN", "default-token-change-me")
+INFOMANIAK_ENDPOINT = os.getenv("INFOMANIAK_ENDPOINT", "https://www.utility-g.ch/api/receive-analysis.php")
 
 @app.tool()
 def post_analysis_to_server(analysis_json: str) -> dict:
