@@ -1,5 +1,4 @@
 from fastapi import FastAPI, HTTPException, Header
-from pydantic import BaseModel
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -28,16 +27,15 @@ except json.JSONDecodeError:
 # API authentication token
 SECRET_TOKEN = os.getenv("SECRET_TOKEN", "default-token-change-me")
 
-class AnalysisData(BaseModel):
-    stocks: List[dict]
-    summary: str
-    analysis_date: str
-    additional_notes: Optional[str] = None
-
-def format_analysis_html(data: AnalysisData) -> str:
+def format_analysis_html(data: dict) -> str:
     """
     Format market analysis into beautiful HTML email
     """
+    stocks = data.get("stocks", [])
+    summary = data.get("summary", "No summary provided")
+    analysis_date = data.get("analysis_date", "N/A")
+    additional_notes = data.get("additional_notes", "")
+    
     html = f"""
     <html>
     <head>
@@ -96,7 +94,6 @@ def format_analysis_html(data: AnalysisData) -> str:
                 border-radius: 6px;
                 padding: 15px;
                 margin-bottom: 15px;
-                transition: all 0.3s ease;
             }}
             .stock-item:hover {{
                 background-color: #f5f5f5;
@@ -159,22 +156,22 @@ def format_analysis_html(data: AnalysisData) -> str:
         <div class="container">
             <div class="header">
                 <h1>📊 Daily Market Analysis</h1>
-                <p>{data.analysis_date}</p>
+                <p>{analysis_date}</p>
             </div>
             <div class="content">
                 <div class="summary">
-                    <p><strong>📈 Summary:</strong> {data.summary}</p>
+                    <p><strong>📈 Summary:</strong> {summary}</p>
                 </div>
     """
     
     # Add each stock
-    if data.stocks:
+    if stocks:
         html += '<div class="stocks">'
-        for stock in data.stocks:
+        for stock in stocks:
             ticker = stock.get('ticker', 'N/A')
             price = stock.get('price', 'N/A')
-            signal = stock.get('signal', 'HOLD').upper()
-            reason = stock.get('reason', 'No additional details')
+            signal = str(stock.get('signal', 'HOLD')).upper()
+            reason = stock.get('reason', 'No details')
             volume = stock.get('volume', 'N/A')
             change = stock.get('change', 'N/A')
             
@@ -193,10 +190,10 @@ def format_analysis_html(data: AnalysisData) -> str:
         html += '</div>'
     
     # Add additional notes if provided
-    if data.additional_notes:
+    if additional_notes:
         html += f"""
         <div class="summary" style="margin-top: 20px;">
-            <p><strong>📝 Notes:</strong> {data.additional_notes}</p>
+            <p><strong>📝 Notes:</strong> {additional_notes}</p>
         </div>
         """
     
@@ -221,22 +218,20 @@ def send_email(html_content: str, subject: str = "Daily Market Analysis") -> dic
     failed_recipients = []
     
     try:
-        # Create message
-        msg = MIMEMultipart('alternative')
-        msg['Subject'] = subject
-        msg['From'] = f"{SMTP_FROM_NAME} <{SMTP_FROM}>"
-        
-        # Attach HTML content
-        msg.attach(MIMEText(html_content, 'html'))
-        
-        # Send to each recipient
         for recipient in SEND_LIST:
             try:
+                # Create message for each recipient
+                msg = MIMEMultipart('alternative')
+                msg['Subject'] = subject
+                msg['From'] = f"{SMTP_FROM_NAME} <{SMTP_FROM}>"
                 msg['To'] = recipient
+                
+                # Attach HTML content
+                msg.attach(MIMEText(html_content, 'html'))
                 
                 # Connect to SMTP server
                 server = smtplib.SMTP(SMTP_HOST, SMTP_PORT)
-                server.starttls()  # TLS for port 587
+                server.starttls()
                 server.login(SMTP_USER, SMTP_PASS)
                 
                 # Send email
@@ -260,7 +255,7 @@ def send_email(html_content: str, subject: str = "Daily Market Analysis") -> dic
     except Exception as e:
         return {
             "status": "error",
-            "message": f"SMTP connection error: {str(e)}",
+            "message": f"SMTP error: {str(e)}",
             "failed": SEND_LIST
         }
 
@@ -279,10 +274,7 @@ def health_check():
 
 @app.get("/config")
 def get_config(authorization: Optional[str] = Header(None)):
-    """
-    View current configuration (requires auth token)
-    Useful for debugging
-    """
+    """View current configuration (requires auth token)"""
     expected_auth = f"Bearer {SECRET_TOKEN}"
     if authorization != expected_auth:
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -299,19 +291,30 @@ def get_config(authorization: Optional[str] = Header(None)):
 
 @app.post("/receive-analysis")
 def receive_analysis(
-    data: AnalysisData,
+    data: dict,
     authorization: Optional[str] = Header(None)
 ):
     """
     Main endpoint: Receive Claude market analysis and send formatted email
     
     Expected header: Authorization: Bearer {SECRET_TOKEN}
+    Expected body: JSON with stocks, summary, analysis_date, optional additional_notes
     """
     
     # Validate authorization token
     expected_auth = f"Bearer {SECRET_TOKEN}"
     if authorization != expected_auth:
         raise HTTPException(status_code=401, detail="Unauthorized - invalid or missing token")
+    
+    # Validate required fields
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="Body must be JSON object")
+    
+    if "stocks" not in data or "summary" not in data or "analysis_date" not in data:
+        raise HTTPException(
+            status_code=400, 
+            detail="Missing required fields: stocks, summary, analysis_date"
+        )
     
     try:
         # Format analysis as HTML email
@@ -320,7 +323,7 @@ def receive_analysis(
         # Send email to all recipients
         email_result = send_email(
             html_content,
-            subject=f"Daily Market Analysis - {data.analysis_date}"
+            subject=f"Daily Market Analysis - {data.get('analysis_date', 'N/A')}"
         )
         
         return {
@@ -335,50 +338,6 @@ def receive_analysis(
             status_code=500,
             detail=f"Failed to process analysis: {str(e)}"
         )
-
-@app.post("/manage-send-list/add")
-def add_recipient(
-    email: str,
-    authorization: Optional[str] = Header(None)
-):
-    """
-    Add an email to the send-list (requires auth)
-    Note: Changes only persist until next Render redeploy
-    For permanent changes, update SEND_LIST env var
-    """
-    expected_auth = f"Bearer {SECRET_TOKEN}"
-    if authorization != expected_auth:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    
-    if email not in SEND_LIST:
-        SEND_LIST.append(email)
-    
-    return {
-        "status": "success",
-        "message": f"Added {email} to send-list",
-        "send_list": SEND_LIST
-    }
-
-@app.post("/manage-send-list/remove")
-def remove_recipient(
-    email: str,
-    authorization: Optional[str] = Header(None)
-):
-    """
-    Remove an email from send-list (requires auth)
-    """
-    expected_auth = f"Bearer {SECRET_TOKEN}"
-    if authorization != expected_auth:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    
-    if email in SEND_LIST:
-        SEND_LIST.remove(email)
-    
-    return {
-        "status": "success",
-        "message": f"Removed {email} from send-list",
-        "send_list": SEND_LIST
-    }
 
 @app.get("/send-list")
 def get_send_list(authorization: Optional[str] = Header(None)):
